@@ -28,7 +28,8 @@ def main():
             line = line[:pos]
 
         # Remove whitespaces
-        line = line.translate(None, ' \r\n')
+        line = line.strip()
+        line = line.replace(" ", "")
 
         values = line.split(',')
         if len(values) < 2:
@@ -37,7 +38,7 @@ def main():
         # Encoding: Translate bit description to code + mask
         bits = values.pop()
         bits = [ (b, '1') if b == '1' or b == '0' else ('0','0') for b in bits ]
-        bits = zip(*bits)
+        bits = list(zip(*bits))
         code = int(''.join(bits[0]), 2)
         mask = int(''.join(bits[1]), 2)
 
@@ -124,7 +125,7 @@ def main():
         # Split codes by extension
         extension = code >> 8
         if extension not in (0,2,3):
-            print 'ERROR: invalid code detected for %s: %s' % (mnem, bin(code))
+            print('ERROR: invalid code detected for %s: %s' % (mnem, bin(code)))
             continue
         if extension > 0:
             extension -= 1
@@ -150,7 +151,7 @@ def main():
             for values in pinfo:
                 fd.write('{ %s },\n' % ', '.join(values))
 
-    mnems = mnems.items()
+    mnems = list(mnems.items())
     mnems.sort()
 
     # Output instruc_t table
