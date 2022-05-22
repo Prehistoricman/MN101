@@ -100,7 +100,7 @@ int idaapi mn101_emu(const insn_t &insn)
     if (Feature & CF_CHG2) handle_operand(insn, insn.ops[1], 0);
     if (Feature & CF_CHG3) handle_operand(insn, insn.ops[2], 0);
     if (Feature & CF_JUMP) remember_problem(PR_JUMP, insn.ea);
-    if (flow) insn.add_cref(0, insn.ea + insn.size, fl_F);
+    if (flow) insn.add_cref(insn.ea + insn.size, 0, fl_F);
 
     // Mark the next command's start halfbyte
     // Note it should be done even if flow==0 to prevent errors on following instructions autoanalysis
