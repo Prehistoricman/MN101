@@ -3,7 +3,6 @@
 
 #include "../idaidp.hpp"
 #include <ida.hpp>
-#include <idp.hpp>
 
 #include "ins.hpp"
 
@@ -41,15 +40,13 @@ enum mn101_registers {
 };
 
 
-void    idaapi mn101_header(void);
-void    idaapi mn101_footer(void);
+void idaapi mn101_header(outctx_t &ctx);
+void idaapi mn101_footer(outctx_t &ctx);
 
-void    idaapi mn101_segstart(ea_t ea);
+void idaapi mn101_segstart(outctx_t &ctx, segment_t &Sarea);
 
-int     idaapi mn101_ana(void);
-int     idaapi mn101_emu(void);
-void    idaapi mn101_out(void);
-bool    idaapi mn101_outop(op_t &op);
+int idaapi mn101_ana(insn_t &insn);
+int idaapi mn101_emu(const insn_t &insn);
 
 
 #endif

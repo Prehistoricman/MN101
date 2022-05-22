@@ -1,59 +1,73 @@
 #include "mn101.hpp"
-#include <srarea.hpp>
+#include <segregs.hpp>
 
 static bool flow;
 
-static void handle_operand(op_t &x, int isread)
+static void handle_operand(const insn_t &insn, const op_t &operand, int isread)
 {
-    ea_t ea = toEA(cmd.cs, x.addr);
+    ea_t ea = to_ea(insn.cs, operand.addr);
 
-    switch (x.type)
+    switch (operand.type)
     {
     case o_void:
+        msg("o_void\n");
+        break;
     case o_reg:
+        msg("o_reg\n");
+        break; 
     case o_bitpos:
+        msg("o_bitpos\n");
+        break;
     case o_phrase:
+        msg("o_phrase\n");
         break;
 
     case o_displ:
-        doImmd(cmd.ea);
-        if (op_adds_xrefs(uFlag, x.n))
-            ua_add_off_drefs2(x, dr_O, OOF_ADDR);
+        msg("o_displ\n");
+        set_immd(insn.ea);
+        if (op_adds_xrefs(insn.flags, operand.n))
+            insn.add_off_drefs(operand, dr_O, OOF_ADDR);
         break;
 
     case o_imm:
-        doImmd(cmd.ea);
+        msg("o_imm\n");
+        set_immd(insn.ea);
 
         // Instructions of type 'MOVW imm,Am' with imm != 0 point that imm is most likely an address
-        if (!isDefArg(uFlag, x.n) && cmd.itype == INS_MOVW && x.value != 0
-            && cmd.Op2.type == o_reg && cmd.Op2.reg >= OP_REG_A0 && cmd.Op2.reg <= OP_REG_A1)
+        if (!is_defarg(insn.flags, operand.n) && (insn.itype == INS_MOVW) && (operand.value != 0)
+            && (insn.Op2.type == o_reg) && (insn.Op2.reg >= OP_REG_A0) && (insn.Op2.reg <= OP_REG_A1))
         {
-            op_offset(cmd.ea, x.n, REF_OFF16);
+            op_offset(insn.ea, operand.n, REF_OFF16);
         }
-        if (op_adds_xrefs(uFlag, x.n))
-            ua_add_off_drefs(x, dr_O);
+        if (op_adds_xrefs(insn.flags, operand.n)) {
+            //TODO old code: ua_add_off_drefs(operand, dr_O);
+            insn.add_off_drefs(operand, dr_O, 0);
+        }
         break;
 
     case o_mem:
-        ua_dodata2(x.offb, ea, x.dtyp);
-        if (!isread)
-            doVar(ea);
-        ua_add_dref(x.offb, ea, isread ? dr_R : dr_W);
+        msg("o_mem\n");
+        insn.create_op_data(operand.offb, ea, operand.dtype);
+        /*if (!isread)
+            doVar(ea);*/ //TODO: This function was removed with no specified replacement in the porting guide
+        insn.add_dref(operand.offb, ea, isread ? dr_R : dr_W);
         break;
 
     case o_far: // Used for JSRV
-        ua_add_dref(x.offb, x.specval, isread ? dr_R : dr_W);
-        ua_dodata2(x.offb, x.specval, dt_dword);
+        msg("o_far\n");
+        insn.add_dref(operand.offb, operand.specval, isread ? dr_R : dr_W);
+        insn.create_op_data(operand.offb, operand.specval, dt_dword);
         //fallthrough
     case o_near:
-        if (InstrIsSet(cmd.itype, CF_CALL))
+        msg("o_near\n");
+        if (has_insn_feature(insn.itype, CF_CALL))
         {
-            ua_add_cref(x.offb, ea, fl_CN);
+            insn.add_cref(operand.offb, ea, fl_CN);
             flow = func_does_return(ea);
         }
         else
         {
-            ua_add_cref(x.offb, ea, fl_JN);
+            insn.add_cref(operand.offb, ea, fl_JN);
         }
 
         // Mark the jump target byte address if it has halfbyte offset
@@ -61,40 +75,40 @@ static void handle_operand(op_t &x, int isread)
         // otherwise we could destroy it by forcing segreg change
         if (get_func(ea) == NULL)
         {
-            split_srarea(ea, rVh, x.value & 1, SR_auto);
+            split_sreg_range(ea, rVh, operand.value & 1, SR_auto);
         }
         break;
 
     default:
         warning("%a %s,%d: bad optype %d",
-            cmd.ea, cmd.get_canon_mnem(), x.n, x.type);
+            insn.ea, insn.get_canon_mnem(), operand.n, operand.type);
         break;
     }
 }
 
 
-int idaapi mn101_emu(void)
+int idaapi mn101_emu(const insn_t &insn)
 {
-    uint32 Feature = cmd.get_canon_feature();
-
+    uint32 Feature = insn.get_canon_feature();
+    msg("emu feature = 0x%X\n", Feature);
     flow = ((Feature & CF_STOP) == 0);
 
-    if (Feature & CF_USE1) handle_operand(cmd.Op1, 1);
-    if (Feature & CF_USE2) handle_operand(cmd.Op2, 1);
-    if (Feature & CF_USE3) handle_operand(cmd.Op3, 1);
-    if (Feature & CF_CHG1) handle_operand(cmd.Op1, 0);
-    if (Feature & CF_CHG2) handle_operand(cmd.Op2, 0);
-    if (Feature & CF_CHG3) handle_operand(cmd.Op3, 0);
-    if (Feature & CF_JUMP) QueueSet(Q_jumps, cmd.ea);
-    if (flow) ua_add_cref(0, cmd.ea + cmd.size, fl_F);
+    if (Feature & CF_USE1) handle_operand(insn, insn.ops[0], 1);
+    if (Feature & CF_USE2) handle_operand(insn, insn.ops[1], 1);
+    if (Feature & CF_USE3) handle_operand(insn, insn.ops[2], 1);
+    if (Feature & CF_CHG1) handle_operand(insn, insn.ops[0], 0);
+    if (Feature & CF_CHG2) handle_operand(insn, insn.ops[1], 0);
+    if (Feature & CF_CHG3) handle_operand(insn, insn.ops[2], 0);
+    if (Feature & CF_JUMP) remember_problem(PR_JUMP, insn.ea);
+    if (flow) insn.add_cref(0, insn.ea + insn.size, fl_F);
 
     // Mark the next command's start halfbyte
     // Note it should be done even if flow==0 to prevent errors on following instructions autoanalysis
     // But be careful not to mess other functions
-    ea_t next = cmd.ea + cmd.size;
+    ea_t next = insn.ea + insn.size;
     if (get_func(next) == NULL)
     {
-        split_srarea(next, rVh, cmd.segpref, SR_auto);
+        split_sreg_range(next, rVh, insn.segpref, SR_auto);
     }
 
     return(1);

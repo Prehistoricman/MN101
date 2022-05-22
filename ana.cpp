@@ -1,5 +1,5 @@
 #include "mn101.hpp"
-#include <srarea.hpp>
+#include <segregs.hpp>
 
 typedef enum {
     OPG_NONE = 0,
@@ -61,7 +61,6 @@ typedef struct
 
 } parseinfo_t;
 
-
 static parseinfo_t parseTable[] = {
 #include "parsetable0.gen.c"
 };
@@ -75,20 +74,21 @@ static parseinfo_t parseTableExtension3[] = {
 };
 
 
-static struct parseState_t
+static class parseState_t
 {
+public:
     ea_t pc;
     ea_t ptr;
     uint32 code;
     uchar sz;
     uchar insbyte;
 
-    void reset()
+    void reset(insn_t &insn)
     {
         code = 0;
         sz = 0;
-        uchar H = get_segreg(cmd.ea, rVh);
-        ptr = pc = (cmd.ea << 1) + H;
+        uchar H = get_sreg(insn.ea, rVh);
+        ptr = pc = (insn.ea << 1) + H;
     }
 
     uint32 fetchNibble()
@@ -103,6 +103,7 @@ static struct parseState_t
         code = (code << 4) | nibble;
         sz++;
         ptr++;
+        msg("parseState nibble %X\n", nibble);
         return nibble;
     }
 
@@ -147,7 +148,7 @@ static void setCodeAddrValue(op_t &op, ea_t addr)
 #define SRVT 0x4080
 #define SIGN_EXTEND(nbits, val) (((val) << (32 - (nbits))) >> (32 - (nbits)))
 
-static bool parseOperand(op_t &op, int type)
+static bool parseOperand(insn_t &insn, op_t &op, int type)
 {
     uchar v;
     signed int imm;
@@ -218,7 +219,7 @@ static bool parseOperand(op_t &op, int type)
         }
         op.addr = op.value = imm;
         op.type = o_imm;
-        op.dtyp = dt_byte;
+        op.dtype = dt_byte;
         break;
     case OPG_IMM8:
     case OPG_IMM8_S:
@@ -230,28 +231,28 @@ static bool parseOperand(op_t &op, int type)
         }
         op.addr = op.value = imm;
         op.type = o_imm;
-        op.dtyp = dt_byte;
+        op.dtype = dt_byte;
         break;
     case OPG_IMM12:
         imm = parseState.fetchByte();
         imm |= parseState.fetchNibble() << 8;
         op.addr = op.value = imm;
         op.type = o_imm;
-        op.dtyp = dt_word;
+        op.dtype = dt_word;
         break;
     case OPG_IMM16:
         imm = parseState.fetchByte();
         imm |= parseState.fetchByte() << 8;
         op.addr = op.value = imm;
         op.type = o_imm;
-        op.dtyp = dt_word;
+        op.dtype = dt_word;
         //op.flags |= OF_NUMBER;
         break;
     case OPG_IO8:
         imm = parseState.fetchByte();
         op.addr = op.value = IOTOP + imm;
         op.type = o_mem;
-        op.dtyp = dt_byte;
+        op.dtype = dt_byte;
         break;
 
     case OPG_BRANCH4:
@@ -318,8 +319,8 @@ static bool parseOperand(op_t &op, int type)
         imm = parseState.fetchNibble();
         imm = SRVT + (imm << 2);
 
-        ea_t tblentry = toEA(cmd.cs, imm);
-        ea_t ea = get_long(tblentry);
+        ea_t tblentry = to_ea(insn.cs, imm);
+        ea_t ea = get_dword(tblentry);
         setCodeAddrValue(op, ((ea & 0xFFFFF) << 1) | (ea >> 23));
         op.specval = tblentry;
         op.type = o_far;
@@ -353,6 +354,8 @@ static bool parseOperand(op_t &op, int type)
         QASSERT(257, 0);
     }
 
+    msg("parseop idx = %d type = %d\n", op.n, op.type);
+
     return true;
 }
 
@@ -366,17 +369,17 @@ static void mergeOps(op_t &src, op_t &dst)
     dst.addr += src.addr;
     dst.value += src.value;
     dst.flags |= src.flags;
-    //dst.dtyp = src.dtyp;
+    //dst.dtype = src.dtype;
 
     src.type = 0;
     src.reg = 0;
     src.addr = 0;
     src.value = 0;
     src.flags = 0;
-    src.dtyp = 0;
+    src.dtype = 0;
 }
 
-static bool parseInstruction(const parseinfo_t *pTable, size_t tblSize)
+static bool parseInstruction(insn_t &insn, const parseinfo_t *pTable, size_t tblSize)
 {
     const parseinfo_t *ins;
     for (size_t i = 0; i < tblSize; i++)
@@ -384,7 +387,8 @@ static bool parseInstruction(const parseinfo_t *pTable, size_t tblSize)
         ins = &pTable[i];
         if (parseState.compareMask(ins))
         {
-            cmd.itype = ins->mnemonic;
+            insn.itype = ins->mnemonic;
+            msg("mnemonic %d\n", ins->mnemonic);
             int opidx = -1;
             for (int j = 0; j < 3; j++)
             {
@@ -393,22 +397,22 @@ static bool parseInstruction(const parseinfo_t *pTable, size_t tblSize)
                     opidx--;
                 else
                     opidx = j;
-                parseOperand(cmd.Operands[opidx], ins->op[j] & 0xFF);
+                parseOperand(insn, insn.ops[opidx], ins->op[j] & 0xFF);
                 if ((ins->op[j] & OPGF_MEM_MASK) != 0)
                 {
-                    if (cmd.Operands[opidx].type == o_reg)
-                        cmd.Operands[opidx].type = o_phrase;
-                    else if (cmd.Operands[opidx].type == o_imm)
-                        cmd.Operands[opidx].type = o_mem;
+                    if (insn.ops[opidx].type == o_reg)
+                        insn.ops[opidx].type = o_phrase;
+                    else if (insn.ops[opidx].type == o_imm)
+                        insn.ops[opidx].type = o_mem;
                     if (ins->op[j] & OPGF_MEM8)
-                        cmd.Operands[opidx].dtyp = dt_byte;
+                        insn.ops[opidx].dtype = dt_byte;
                     if (ins->op[j] & OPGF_MEM16)
-                        cmd.Operands[opidx].dtyp = dt_word;
+                        insn.ops[opidx].dtype = dt_word;
                 }
                 if ((ins->op[j] & OPGF_RELATIVE) != 0)
                 {
-                    cmd.Operands[opidx].type = o_displ;
-                    cmd.Operands[opidx].addr = cmd.Operands[opidx].value;
+                    insn.ops[opidx].type = o_displ;
+                    insn.ops[opidx].addr = insn.ops[opidx].value;
                 }
             }
 
@@ -416,14 +420,14 @@ static bool parseInstruction(const parseinfo_t *pTable, size_t tblSize)
             int dstidx = 0;
             for (int srcidx = 0; srcidx < 3; srcidx++)
             {
-                if (cmd.Operands[srcidx].type == o_displ)
+                if (insn.ops[srcidx].type == o_displ)
                 {
                     QASSERT(258, dstidx > 0);
                     dstidx--;
                 }
                 if (srcidx != dstidx)
                 {
-                    mergeOps(cmd.Operands[srcidx], cmd.Operands[dstidx]);
+                    mergeOps(insn.ops[srcidx], insn.ops[dstidx]);
                 }
                 dstidx++;
             }
@@ -436,13 +440,14 @@ static bool parseInstruction(const parseinfo_t *pTable, size_t tblSize)
 }
 
 
-int idaapi mn101_ana(void)
+int idaapi mn101_ana(insn_t &insn)
 {
     bool decoded;
-    parseState.reset();
+    parseState.reset(insn);
 
     // Get the first byte of instruction
     uchar extension = parseState.fetchNibble();
+    msg("ext %d\n", extension);
 
     // Handle extension codes
     switch (extension)
@@ -450,39 +455,42 @@ int idaapi mn101_ana(void)
     case 0x3:
         parseState.fetchNibble();
         parseState.fetchNibble();
-        decoded = parseInstruction(parseTableExtension3, qnumber(parseTableExtension3));
+        decoded = parseInstruction(insn, parseTableExtension3, qnumber(parseTableExtension3));
         break;
-    case 0x2:
 
+    case 0x2:
         parseState.fetchNibble();
         parseState.fetchNibble();
-        decoded = parseInstruction(parseTableExtension2, qnumber(parseTableExtension2));
+        decoded = parseInstruction(insn, parseTableExtension2, qnumber(parseTableExtension2));
         break;
+
     default:
         parseState.fetchNibble();
-        decoded = parseInstruction(parseTable, qnumber(parseTable));
+        decoded = parseInstruction(insn, parseTable, qnumber(parseTable));
         break;
     }
 
-    if (!decoded)
+    if (!decoded) {
+        msg("not a valid instruction\n");
         return 0;
+    }
 
 
     // Compiler generally aligns the size of return instructions by a byte
     //TODO: maybe add a user option for this
-    /*if (cmd.itype == INS_RTS || cmd.itype == INS_RTI)
+    /*if (insn.itype == INS_RTS || insn.itype == INS_RTI)
     {
         if ((parseState.sz + parseState.pc) & 1) ++parseState.sz;
-        cmd.segpref = 0;
+        insn.segpref = 0;
     }
     else*/
     {
-        // cmd.segpref would hold 1 if the last byte was only partially consumed
-        cmd.segpref = parseState.ptr & 1;
+        // insn.segpref would hold 1 if the last byte was only partially consumed
+        insn.segpref = parseState.ptr & 1;
     }
 
     // Update the command size
-    cmd.size = (parseState.sz + (parseState.pc & 1)) / 2;
-
-    return(cmd.size);
+    insn.size = (parseState.sz + (parseState.pc & 1)) / 2;
+    msg("ana finish mnem = %d %s op0 type = %d\n", insn.itype, insn.get_canon_mnem(), insn.ops[0].type);
+    return(insn.size);
 }

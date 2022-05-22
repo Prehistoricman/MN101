@@ -1,9 +1,19 @@
 #include "mn101.hpp"
 
-extern char deviceparams[];
-extern char device[];
+extern qstring device;
 
-static void OutVarName(op_t &x)
+class out_mn101_t : public outctx_t
+{
+public:
+    bool out_operand(const op_t &x);
+    void out_insn(void);
+private:
+    void OutVarName(const op_t& x);
+};
+
+DECLARE_OUT_FUNCS_WITHOUT_OUTMNEM(out_mn101_t)
+
+void out_mn101_t::OutVarName(const op_t &x)
 {
     ea_t addr = x.addr;
     bool H = 0;
@@ -11,17 +21,16 @@ static void OutVarName(op_t &x)
     if (x.addr != x.value)
         H = x.value & 1;
 
-    ea_t target = toEA(codeSeg(addr, x.n), addr);
+    ea_t target = to_ea(map_code_ea(insn, x), addr);
     if (!out_name_expr(x, target, addr))
     {
-        OutValue(x, OOF_ADDR | OOF_NUMBER | OOFS_NOSIGN | OOFW_32);
-        QueueSet(Q_noName, cmd.ea);
+        out_value(x, OOF_ADDR | OOF_NUMBER | OOFS_NOSIGN | OOFW_32);
+        remember_problem(PR_NONAME, insn.ea);
     }
     if (H) out_symbol('_');
 }
 
-bool idaapi mn101_outop(op_t &x)
-{
+bool out_mn101_t::out_operand(const op_t &x) {
     switch (x.type)
     {
     case o_phrase:
@@ -30,20 +39,20 @@ bool idaapi mn101_outop(op_t &x)
         // Do not add imm-offset when its zero
         if (x.addr != 0)
         {
-            OutValue(x, OOF_ADDR);
+            out_value(x, OOF_ADDR);
             out_symbol(',');
         }
-        out_register(ph.regNames[x.reg]);
+        out_register(ph.reg_names[x.reg]);
         out_symbol(')');
         break;
 
     case o_reg:
-        out_register(ph.regNames[x.reg]);
+        out_register(ph.reg_names[x.reg]);
         break;
 
     case o_bitpos:
     case o_imm:
-        OutValue(x, OOF_SIGNED | OOFW_32);
+        out_value(x, OOF_SIGNED | OOFW_32);
         break;
 
     case o_far:
@@ -61,87 +70,74 @@ bool idaapi mn101_outop(op_t &x)
         return 0;
 
     default:
-        warning("out: %a: bad optype %d", cmd.ea, x.type);
+        warning("out: %a: bad optype %d", insn.ea, x.type);
         break;
     }
     return 1;
 }
 
-void idaapi mn101_out(void)
+void out_mn101_t::out_insn(void)
 {
-    char buf[MAXSTR];
-    init_output_buffer(buf, sizeof(buf)); // setup the output pointer
-
-    OutMnem();
+    out_mnemonic();
 
     //First operand
-    if (cmd.Op1.type != o_void)
+    if (insn.ops[0].type != o_void)
         out_one_operand(0);
 
-    //Second operand
-    if (cmd.Op2.type != o_void)
-    {
-        if (cmd.Op2.type != o_bitpos)
+    //Second and third operand
+    for (int i = 1; i <= 2; i++) {
+        if (insn.ops[i].type == o_void) {
+            break;
+        }
+        if (insn.ops[1].type != o_bitpos)
         {
             out_symbol(',');
-            OutChar(' ');
+            out_char(' ');
         }
-        out_one_operand(1);
+        out_one_operand(i);
     }
 
-    // Third operand
-    if (cmd.Op3.type != o_void)
-    {
-        if (cmd.Op3.type != o_bitpos)
-        {
-            out_symbol(',');
-            OutChar(' ');
-        }
-        out_one_operand(2);
-    }
+    out_immchar_cmts();
+    //if (is_suspop(insn.ea, insn.flags, 0)) out_immchar_cmts();
+    //if (is_suspop(insn.ea, insn.flags, 1)) out_immchar_cmts();
+    //if (is_suspop(insn.ea, insn.flags, 2)) out_immchar_cmts();
 
-    if (isVoid(cmd.ea, uFlag, 0)) OutImmChar(cmd.Op1);
-    if (isVoid(cmd.ea, uFlag, 1)) OutImmChar(cmd.Op2);
-    if (isVoid(cmd.ea, uFlag, 2)) OutImmChar(cmd.Op3);
-
-    term_output_buffer();
-    gl_comm = 1;
-    MakeLine(buf);
+    flush_outbuf();
 }
 
 //--------------------------------------------------------------------------
 // Listing header
-void idaapi mn101_header(void)
+void idaapi mn101_header(outctx_t &ctx)
 {
-    gen_header(GH_PRINT_ALL_BUT_BYTESEX, device[0] ? device : NULL, deviceparams);
+    ctx.gen_header(GH_PRINT_ALL_BUT_BYTESEX, device.c_str());
+    ctx.gen_empty_line();
 }
 
 //--------------------------------------------------------------------------
 // Segment start
-void idaapi mn101_segstart(ea_t ea)
+void idaapi mn101_segstart(outctx_t &ctx, segment_t &Sarea)
 {
-    segment_t *Sarea = getseg(ea);
-    if (is_spec_segm(Sarea->type)) return;
+    if (is_spec_segm(Sarea.type)) return;
 
-    char sname[MAXNAMELEN];
-    get_true_segm_name(Sarea, sname, sizeof(sname));
+    qstring sname;
+    get_segm_name(&sname, &Sarea, 0/*get segment name 'as is'*/);
 
-    gen_cmt_line("section %s", sname);
+    ctx.gen_cmt_line("section %s", sname);
 }
 
 
 //--------------------------------------------------------------------------
 // Listing footer
-void idaapi mn101_footer(void)
+void idaapi mn101_footer(outctx_t &ctx)
 {
     char buf[MAXSTR];
     char *const end = buf + sizeof(buf);
     if (ash.end != NULL)
     {
-        MakeNull();
-        char *ptr = tag_addstr(buf, end, COLOR_ASMDIR, ash.end);
+        ctx.gen_empty_line();
+        char* ptr = buf;// tag_addstr(buf, end, COLOR_ASMDIR, ash.end); //TODO use out_tagon?
         qstring name;
-        if (get_colored_name(&name, inf.beginEA) > 0)
+        if (get_colored_name(&name, inf.start_ea) > 0)
         {
             register size_t i = strlen(ash.end);
             do
@@ -149,10 +145,10 @@ void idaapi mn101_footer(void)
             while (++i < 8);
             APPEND(ptr, end, name.begin());
         }
-        MakeLine(buf, inf.indent);
+        ctx.flush_buf(buf, inf.indent);
     }
     else
     {
-        gen_cmt_line("end of file");
+        ctx.gen_cmt_line("end of file");
     }
 }

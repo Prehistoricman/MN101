@@ -1,8 +1,7 @@
-#include <idp.hpp>
-#include <diskio.hpp>
-#include <srarea.hpp>
-
 #include "mn101.hpp"
+
+#include <diskio.hpp>
+#include <segregs.hpp>
 
 //--------------------------------------------------------------------------
 static const char *const mn101_registerNames[] =
@@ -19,55 +18,118 @@ static const char *const mn101_registerNames[] =
 //----------------------------------------------------------------------
 //       Prepare global variables & defines for ../iocommon.cpp
 //----------------------------------------------------------------------
-netnode helper;
-char device[MAXSTR] = "";
-static size_t numports = 0;
-static ioport_t *ports = NULL;
-
+static netnode helper;
+qstring device;
+static ioports_t ports;
+static const char cfgname[] = "mn101e.cfg";
 #include "../iocommon.cpp"
 
-//----------------------------------------------------------------------
-static int idaapi notify(processor_t::idp_notify msgid, ...)
-{
-    va_list va;
-    va_start(va, msgid);
 
-    int code = invoke_callbacks(HT_IDP, msgid, va);
-    if (code) return code;
+//----------------------------------------------------------------------
+static ssize_t idaapi idb_callback(void *, int code, va_list /*va*/)
+{
+    switch (code)
+    {
+    case idb_event::closebase:
+    case idb_event::savebase:
+        helper.supset(0, device.c_str()); //Update device type in the IDB
+        break;
+    }
+    return 0;
+}
+
+//----------------------------------------------------------------------
+static ssize_t idaapi notify(void*, int msgid, va_list va)
+{
+    if (msgid != 75 && msgid != 16 && msgid != 20 && msgid != 55) {
+        msg("notify: %d ", msgid);
+    }
+    //int code = invoke_callbacks(HT_IDP, msgid, va);
+    //if (code) return code;
 
     switch (msgid)
     {
-    case processor_t::init:
+    case processor_t::ev_init:
+        hook_to_notification_point(HT_IDB, idb_callback);
         helper.create("$ MN101");
+        helper.supstr(&device, 0); //Write device type to the IDB
         break;
 
-    case processor_t::term:
-        free_ioports(ports, numports);
+    case processor_t::ev_term:
+        ports.clear();
+        unhook_from_notification_point(HT_IDB, idb_callback);
         break;
 
-    case processor_t::newfile:
+    case processor_t::ev_newfile:
     {
-        char cfgfile[QMAXFILE];
-
-        get_cfg_filename(cfgfile, sizeof(cfgfile));
-        if (choose_ioport_device(cfgfile, device, sizeof(device), parse_area_line0))
-            set_device_name(device, IORESP_ALL);
+        if (choose_ioport_device(&device, cfgname, parse_area_line0)) //TODO is parse_area_line0 necessary?
+            set_device_name(device.c_str(), IORESP_ALL);
     }
     break;
 
-    case processor_t::newseg:
+    case processor_t::ev_creating_segm:
     {
         segment_t *s = va_arg(va, segment_t *);
         // set initial value for pseudosegment register H
-        s->defsr[rVh - ph.regFirstSreg] = 0;
+        s->defsr[rVh - ph.reg_first_sreg] = 0;
     }
     break;
+
+    case processor_t::ev_out_header:
+    {
+        outctx_t* ctx = va_arg(va, outctx_t*);
+        mn101_header(*ctx);
+    } break;
+
+    case processor_t::ev_out_footer:
+    {
+        outctx_t* ctx = va_arg(va, outctx_t*);
+        mn101_footer(*ctx);
+    } break;
+
+    case processor_t::ev_out_segstart:
+    {
+        outctx_t* ctx = va_arg(va, outctx_t*);
+        segment_t* segment = va_arg(va, segment_t*);
+        msg("segstart at 0x%X\n", segment->start_ea);
+        mn101_segstart(*ctx, *segment);
+    } break;
+
+    case processor_t::ev_ana_insn:
+    {
+        insn_t *insn = va_arg(va, insn_t *);
+        msg("ana instruction at 0x%X\n", insn->ea);
+        return mn101_ana(*insn);
+    }
+
+    case processor_t::ev_emu_insn:
+    {
+        const insn_t *insn = va_arg(va, const insn_t *);
+        msg("emu instruction at 0x%X\n", insn->ea);
+        return mn101_emu(*insn) ? 1 : -1; //Returns 1 for ok, -1 for delete instruction
+    }
+
+    case processor_t::ev_out_insn:
+    {
+        outctx_t *ctx = va_arg(va, outctx_t *);
+        msg("out\n");
+        out_insn(*ctx);
+        msg("out end\n");
+        return 1;
+    }
+
+    case processor_t::ev_out_operand:
+    {
+        outctx_t *ctx = va_arg(va, outctx_t *);
+        const op_t *op = va_arg(va, const op_t *);
+        msg("out op %d\n", op->n);
+        return out_opnd(*ctx, *op) ? 1 : -1;
+    }
 
     default:
         break;
     }
-    va_end(va);
-    return 1;
+    return 0;
 }
 
 static const asm_t mn101asm = {
@@ -76,7 +138,6 @@ static const asm_t mn101asm = {
     "MN101 assembler",          // Assembler name
     0,                          // Help screen number
     NULL,                       // array of automatically generated header lines
-    NULL,                       // array of unsupported instructions
     "org",                      // org directive
     "end",                      // end directive
     ";",                        // comment string
@@ -97,10 +158,6 @@ static const asm_t mn101asm = {
     "DB ?",                     // uninitialized data directive
     "EQU",                      // 'equ' Used if AS_UNEQU is set
     NULL,                       // 'seg ' prefix
-    NULL,                       // Pointer to checkarg_dispatch function
-    NULL,                       // Unused
-    NULL,                       // Unused
-    NULL,                       // Translation to use in character and string constants
     NULL,                       // current IP (instruction pointer) symbol in assembler
     NULL,                       // Generate function header line
     NULL,                       // Generate function footer lines
@@ -146,6 +203,7 @@ processor_t LPH = {
     IDP_INTERFACE_VERSION,
     PLFM_MN101,
     PRN_HEX | PR_SEGS | PR_SGROTHER,
+    0,                          // Additional processor flags
     8,                          // 8 bits in a byte for code segments
     8,                          // 8 bits in a byte for other segments
 
@@ -156,31 +214,9 @@ processor_t LPH = {
 
     notify,                     // the kernel event notification callback
 
-    mn101_header,               // generate the disassembly header
-    mn101_footer,               // generate the disassembly footer
 
-    mn101_segstart,             // generate a segment declaration (start of segment)
-    std_gen_segm_footer,        // generate a segment footer (end of segment)
-
-    NULL,                       // generate 'assume' directives
-
-    mn101_ana,                  // analyze an instruction and fill the 'cmd' structure
-    mn101_emu,                  // emulate an instruction
-
-    mn101_out,                  // generate a text representation of an instruction
-    mn101_outop,                // generate a text representation of an operand
-    intel_data,                 // generate a text representation of a data item
-    NULL,                       // compare operands
-    NULL,                       // can an operand have a type?
-
-    qnumber(mn101_registerNames),            // Number of registers
-    mn101_registerNames,                     // Regsiter names
-    NULL,                       // get abstract register
-
-    0,                          // Number of register files
-    NULL,                       // Register file names
-    NULL,                       // Register descriptions
-    NULL,                       // Pointer to CPU registers
+    mn101_registerNames,          // Register names
+    qnumber(mn101_registerNames), // Number of registers
 
     rVcs,rVh,                   // Number of first/last segment register
     2,                          // size of a segment register
@@ -190,25 +226,26 @@ processor_t LPH = {
     NULL,                       // Array of typical code start sequences
     retcodes,                   // Array of 'return' instruction opcodes.
 
-
     0, INS_LAST,                // icode of the first/last instruction
     Instructions,               // Array of instructions
-    NULL,                       // is indirect far jump or call instruction?
-    NULL,                       // Translation function for offsets
-    0,                          // Size of long double (tbyte) for this processor
-    NULL,                       // Floating point -> IEEE conversion function
-    { 0, },                     // Number of digits in floating numbers after the decimal point
-    NULL,                       // Find 'switch' idiom
-    NULL,                       // Generate map file
-    NULL,                       // Extract address from a string
-    NULL,                       // Check whether the operand is relative to stack pointer or frame pointer
-    NULL,                       // Create a function frame for a newly created function
-    NULL,                       // Get size of function return address in bytes
-    NULL,                       // Generate stack variable definition line
-    NULL,                       // Generate text representation of an item in a special segment
+
+    0,                          // tbyte size
+
+    { 0,7,15,19 },                     // Number of digits in floating numbers after the decimal point
+
     INS_RTS,                    // Icode of return instruction
-    NULL,                       // Set IDP-specific option
-    NULL,                       // Is the instruction created only for alignment purposes?
-    NULL,                       // Reserved
-    0                           // The number of bits in the fixup HIGH part
+
+    NULL                        // Unused
+
+
+
+    /*
+
+    mn101_ana,                  // analyze an instruction and fill the 'cmd' structure
+    mn101_emu,                  // emulate an instruction
+
+    mn101_out,                  // generate a text representation of an instruction
+    mn101_outop,                // generate a text representation of an operand
+    intel_data,                 // generate a text representation of a data item
+    */
 };
